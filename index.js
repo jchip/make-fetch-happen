@@ -169,11 +169,11 @@ function cachingFetch (uri, _opts) {
       }
 
       // Missing cache entry, or mode is default (if stale), reload, no-store
-      return remoteFetch(req.url, opts)
+      return remoteFetch(req.url, res, opts)
     })
   }
 
-  return remoteFetch(uri, opts)
+  return remoteFetch(uri, null, opts)
 }
 
 function iterableToObject (iter) {
@@ -236,7 +236,7 @@ function conditionalFetch (req, cachedRes, opts) {
   const policy = makePolicy(req, cachedRes)
   opts.headers = policy.revalidationHeaders(_req)
 
-  return remoteFetch(req.url, opts)
+  return remoteFetch(req.url, cachedRes, opts)
     .then(condRes => {
       const revalidatedPolicy = policy.revalidatedPolicy(_req, {
         status: condRes.status,
@@ -254,12 +254,7 @@ function conditionalFetch (req, cachedRes, opts) {
       }
 
       if (condRes.status === 304) { // 304 Not Modified
-        condRes.body = cachedRes.body
-        return opts.cacheManager.put(req, condRes, opts)
-          .then(newRes => {
-            newRes.headers = new fetch.Headers(revalidatedPolicy.policy.responseHeaders())
-            return newRes
-          })
+        return cachedRes;
       }
 
       return condRes
@@ -306,7 +301,7 @@ function remoteFetchHandleIntegrity (res, integrity) {
   })
 }
 
-function remoteFetch (uri, opts) {
+function remoteFetch (uri, cachedRes, opts) {
   const agent = getAgent(uri, opts)
   const headers = Object.assign({
     'connection': agent ? 'keep-alive' : 'close',
@@ -343,13 +338,19 @@ function remoteFetch (uri, opts) {
             const isMethodGetHead = req.method === 'GET' ||
               req.method === 'HEAD'
 
-            const isCachable = opts.cache !== 'no-store' &&
-              isMethodGetHead &&
-              makePolicy(req, res).storable() &&
-              res.status === 200 // No other statuses should be stored!
+            // const isCachable = opts.cache !== 'no-store' &&
+            //   isMethodGetHead &&
+            //   makePolicy(req, res).storable() &&
+            //   res.status === 200 // No other statuses should be stored!
+
+            let isCachable = opts.cache !== 'no-store' && isMethodGetHead && res.status === 200;
+
+            if (isCachable && opts.cachePolicy !== "ignore") {
+              isCachable = makePolicy(req, res).storable();
+            }
 
             if (isCachable) {
-              return opts.cacheManager.put(req, res, opts)
+              return opts.cacheManager.put(req, res, opts, cachedRes)
             }
 
             if (!isMethodGetHead) {

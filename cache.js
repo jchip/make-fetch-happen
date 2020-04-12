@@ -40,7 +40,7 @@ module.exports = class Cache {
   // matching request in the Cache object.
   match (req, opts) {
     opts = opts || {}
-    const key = cacheKey(req)
+    const key = opts.cacheKey || cacheKey(req)
     return cacache.get.info(this._path, key).then(info => {
       return info && cacache.get.hasContent(
         this._path, info.integrity, opts
@@ -56,11 +56,14 @@ module.exports = class Cache {
         const resHeaders = new fetch.Headers(info.metadata.resHeaders)
         addCacheHeaders(resHeaders, this._path, key, info.integrity, info.time)
         if (req.method === 'HEAD') {
-          return new fetch.Response(null, {
+          const xres = new fetch.Response(null, {
             url: req.url,
             headers: resHeaders,
-            status: 200
-          })
+            status: 200,
+          });
+          xres.cacheKey = key;
+          xres.cacheIntegrity = info.integrity
+          return xres;
         }
         let body
         const cachePath = this._path
@@ -95,22 +98,27 @@ module.exports = class Cache {
             }
           })
         }
-        return this.Promise.resolve(new fetch.Response(body, {
+        const xres = new fetch.Response(body, {
           url: req.url,
           headers: resHeaders,
           status: 200,
-          size: info.size
-        }))
+          size: info.size,
+        });
+
+        xres.cacheKey = key;
+        xres.cacheIntegrity = info.integrity
+
+        return this.Promise.resolve(xres)
       }
     })
   }
 
   // Takes both a request and its response and adds it to the given cache.
-  put (req, response, opts) {
+  put (req, response, opts, cachedRes) {
     opts = opts || {}
     const size = response.headers.get('content-length')
     const fitInMemory = !!size && opts.memoize !== false && size < MAX_MEM_SIZE
-    const ckey = cacheKey(req)
+    const ckey = opts.cacheKey || cacheKey(req)
     const cacheOpts = {
       algorithms: opts.algorithms,
       metadata: {
@@ -123,6 +131,10 @@ module.exports = class Cache {
       size,
       memoize: fitInMemory && opts.memoize
     }
+    if (cachedRes) {
+      cacheOpts.existIntegrity = cachedRes.cacheIntegrity;
+      cacheOpts.existKey = cachedRes.cacheKey;
+    }
     if (req.method === 'HEAD' || response.status === 304) {
       // Update metadata without writing
       return cacache.get.info(this._path, ckey).then(info => {
@@ -134,7 +146,7 @@ module.exports = class Cache {
         return new this.Promise((resolve, reject) => {
           pipe(
             cacache.get.stream.byDigest(this._path, info.integrity, cacheOpts),
-            cacache.put.stream(this._path, cacheKey(req), cacheOpts),
+            cacache.put.stream(this._path, ckey, cacheOpts),
             err => err ? reject(err) : resolve(response)
           )
         })
@@ -155,7 +167,7 @@ module.exports = class Cache {
           }, done => {
             cacache.put(
               cachePath,
-              cacheKey(req),
+              ckey,
               Buffer.concat(buf, bufSize),
               cacheOpts
             ).then(
@@ -165,7 +177,7 @@ module.exports = class Cache {
           })
         } else {
           cacheTargetStream =
-          cacache.put.stream(cachePath, cacheKey(req), cacheOpts)
+          cacache.put.stream(cachePath, ckey, cacheOpts)
         }
       }
       cacheTargetStream.write(chunk, enc, cb)
@@ -210,7 +222,7 @@ module.exports = class Cache {
     }
     return cacache.rm.entry(
       this._path,
-      cacheKey(req)
+      opts.cacheKey || cacheKey(req)
     // TODO - true/false
     ).then(() => false)
   }
